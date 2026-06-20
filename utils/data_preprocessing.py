@@ -2,29 +2,55 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
+
 SYMBOLS = [
-    'CS_Deutsche Post',
-    'CS_Henkel',
-    'CS_Fresenius',
-    'CS_Siemens',
-    'CS_Beiersdorf',
-    'CS_RWE',
-    'CS_Muenchener Rueckversicherungs-Gesellschaft',
-    'CS_Continental',
-    'CS_Mercedes Benz',
-    'CS_Zalando',
-    'CS_MTUAeroEngines',
-    'CS_Volkswagen',
-    'CS_Brenntag',
-    'CS_Qiagen',
-    'CS_Infineon',
-    'CS_Heidelberg Cement',
-    'CS_Rheinmetall',
-    'CS_Deutsche Boerse',
-    'CS_Sartorius',
-    'CS_Fresenius Medical Care',
-    'CS_Airbus',
-    'CS_Adidas']
+ 'Deutsche_Post',
+ 'Henkel',
+ 'Fresenius',
+ 'Siemens',
+ 'Beiersdorf',
+ 'RWE',
+ 'Muenchener_Rueckversicherungs-Gesellschaft',
+ 'Continental',
+ 'Mercedes_Benz',
+ 'Zalando',
+ 'Volkswagen',
+ 'Brenntag',
+ 'Qiagen',
+ 'Infineon',
+ 'Heidelberg_Cement',
+ 'Deutsche_Boerse',
+ 'Sartorius',
+ 'Fresenius_Medical_Care',
+ 'Airbus',
+ 'Adidas',
+ 'FUT_DAX_Futures']
+
+
+
+
+CS_SYMBOLS = [
+ 'CS_Deutsche Post',
+ 'CS_Henkel',
+ 'CS_Fresenius',
+ 'CS_Siemens',
+ 'CS_Beiersdorf',
+ 'CS_RWE',
+ 'CS_Muenchener Rueckversicherungs-Gesellschaft',
+ 'CS_Continental',
+ 'CS_Mercedes Benz',
+ 'CS_Zalando',
+ 'CS_Volkswagen',
+ 'CS_Brenntag',
+ 'CS_Qiagen',
+ 'FUT_DAX Futures',
+ 'CS_Infineon',
+ 'CS_Heidelberg Cement',
+ 'CS_Deutsche Boerse',
+ 'CS_Sartorius',
+ 'CS_Fresenius Medical Care',
+ 'CS_Airbus',
+ 'CS_Adidas']
 
 
 SAMPLE_DATES = [
@@ -46,7 +72,7 @@ SAMPLE_DATES = [
  '2023-06-22', '2023-06-23', '2023-06-26', '2023-06-27', '2023-06-28', '2023-06-29','2023-06-30']
 
 
-PRICE_MEASURES = ['TransactionPrice','MidPrice', 'MidPriceQW', 'MidPriceCQW', 'MicroPrice_tick-based_10_1s']
+PRICE_MEASURES = ['TransactionPrice','MidPrice', 'MidPriceQW', 'MidPriceCQW', 'MicroPrice']
 
 
 import pandas as pd
@@ -146,19 +172,9 @@ def compute_transaction_price(
     out[buy_mask]  = ask_arr[buy_mask]
     out[sell_mask] = bid_arr[sell_mask]
 
-    return pd.Series(out, index=df.index).ffill()
-
-def resample_data():
-    bin_size = 100_000_000  # 100ms in ns
-    df = df.assign(bin=(df[ts_col] // bin_size) * bin_size)
-    df = df.groupby("bin", sort=True).last().reset_index()    
-    ts = df["bin"].to_numpy(dtype=np.int64)
-    
+    return pd.Series(out, index=df.index).ffill()    
 
 
-# Planned changes:
-# -vectorize loop over multiple price measures.
-# - vectorize loop over feature_columns
 def compute_feature_target_matrix(
     df: pd.DataFrame,
     ts_col: str,
@@ -187,6 +203,8 @@ def compute_feature_target_matrix(
     out_cols = {}
     # Horizon classification
     deltas = np.array([pd.Timedelta(h).value for h in horizons], dtype=np.int64)
+
+    ts = df[ts_col].to_numpy(dtype=np.float64)
 
     forward_idx = np.flatnonzero(deltas >= 0)
     backward_idx = np.flatnonzero(deltas < 0)
