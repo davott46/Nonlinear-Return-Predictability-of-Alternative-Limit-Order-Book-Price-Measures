@@ -6,3 +6,5 @@ Regression_Output/
 notes.ipynb
 .ipynb_checkpoints/
 __pycache__/
+.pytest_cache/
+data/

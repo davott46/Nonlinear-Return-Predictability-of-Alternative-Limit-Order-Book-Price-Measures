@@ -1,6 +1,5 @@
 from pathlib import Path
 import pandas as pd
-import numpy as np
 import os
 
 
@@ -60,58 +59,6 @@ def create_output_dirs(
     return dirs
 
 
-def normalize_train_test(
-    X_train,
-    X_test,
-    y_train,
-    y_test
-):
-    # ----------------------------------------
-    # Feature normalization
-    # ----------------------------------------
-
-    X_mean = X_train.mean(axis=0,dtype=np.float64)
-    X_std = X_train.std(axis=0,dtype=np.float64)
-
-    X_std[X_std==0.0] = 1.0
-
-    X_train_norm = ((X_train - X_mean) / X_std).astype(np.float32)
-
-    X_test_norm = ((X_test - X_mean) / X_std).astype(np.float32)
-
-    # ----------------------------------------
-    # Target normalization
-    # ----------------------------------------
-
-    y_mean = y_train.mean(dtype=np.float64)
-    y_std = y_train.std(dtype=np.float64)
-
-    if y_std==0.0:
-        y_std = 1.0
-
-    y_train_norm = (
-        (y_train - y_mean)/y_std
-    ).astype(np.float32)
-
-    y_test_norm = (
-        (y_test - y_mean)/y_std
-    ).astype(np.float32)
-
-    return {
-        "X_train": X_train_norm,
-        "X_test": X_test_norm,
-
-        "y_train": y_train_norm,
-        "y_test": y_test_norm,
-
-        "X_mean": X_mean.astype(np.float32),
-        "X_std": X_std.astype(np.float32),
-
-        "y_mean": np.float32(y_mean),
-        "y_std": np.float32(y_std)
-    }
-
-
 def save_table(
     df,
     root_dir,
@@ -140,7 +87,10 @@ def save_table(
         )
 
     elif file_format == "feather":
-        df.reset_index(drop=True).to_feather(path)
+        # to_feather only supports zstd / lz4 / uncompressed (not snappy),
+        # so fall back to zstd when a parquet-style codec is passed.
+        feather_comp = compression if compression in ("zstd", "lz4", "uncompressed") else "zstd"
+        df.reset_index(drop=True).to_feather(path, compression=feather_comp)
 
     else:
         raise ValueError(f"Unsupported file format: {file_format}")

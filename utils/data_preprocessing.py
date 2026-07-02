@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 
 SYMBOLS = [
+ 'Adidas',
  'Deutsche_Post',
  'Henkel',
  'Fresenius',
@@ -23,34 +24,9 @@ SYMBOLS = [
  'Sartorius',
  'Fresenius_Medical_Care',
  'Airbus',
- 'Adidas',
  'FUT_DAX_Futures']
 
 
-
-
-CS_SYMBOLS = [
- 'CS_Deutsche Post',
- 'CS_Henkel',
- 'CS_Fresenius',
- 'CS_Siemens',
- 'CS_Beiersdorf',
- 'CS_RWE',
- 'CS_Muenchener Rueckversicherungs-Gesellschaft',
- 'CS_Continental',
- 'CS_Mercedes Benz',
- 'CS_Zalando',
- 'CS_Volkswagen',
- 'CS_Brenntag',
- 'CS_Qiagen',
- 'FUT_DAX Futures',
- 'CS_Infineon',
- 'CS_Heidelberg Cement',
- 'CS_Deutsche Boerse',
- 'CS_Sartorius',
- 'CS_Fresenius Medical Care',
- 'CS_Airbus',
- 'CS_Adidas']
 
 
 SAMPLE_DATES = [
@@ -73,58 +49,6 @@ SAMPLE_DATES = [
 
 
 PRICE_MEASURES = ['TransactionPrice','MidPrice', 'MidPriceQW', 'MidPriceCQW', 'MicroPrice']
-
-
-import pandas as pd
-
-def merge_lob_with_transactions(
-    lob_df: pd.DataFrame,
-    tx_df: pd.DataFrame,
-    lob_ts_col: str = "Timestamp",
-    tx_ts_col: str = "Timestamp",
-) -> pd.DataFrame:
-    """
-    Assign each transaction to the first LOB snapshot whose timestamp
-    is >= the transaction timestamp.
-
-    Parameters
-    ----------
-    lob_df : pd.DataFrame
-        DataFrame containing LOB snapshots.
-    tx_df : pd.DataFrame
-        DataFrame containing transaction data.
-    lob_ts_col : str
-        Timestamp column in lob_df.
-    tx_ts_col : str
-        Timestamp column in tx_df.
-    """
-
-    # Defensive copies
-    lob = lob_df.copy()
-    tx = tx_df.copy()
-
-    # Ensure timestamps are datetime
-    lob[lob_ts_col] = pd.to_datetime(lob[lob_ts_col])
-    tx[tx_ts_col] = pd.to_datetime(tx[tx_ts_col])
-
-    # Sort required for merge_asof
-    lob = lob.sort_values(lob_ts_col)
-    tx = tx.sort_values(tx_ts_col)
-
-    # Assign each transaction to the first LOB timestamp >= tx timestamp
-    merged = pd.merge_asof(
-        tx,
-        lob,
-        left_on=tx_ts_col,
-        right_on=lob_ts_col,
-        direction="forward",
-    )
-
-    # Optional: reorder so LOB timestamps define the resulting dataframe
-    merged = merged.sort_values(lob_ts_col).reset_index(drop=True)
-
-    return merged
-
 
 
 # Make this faster using int timestamp instead of datetime ts later.
@@ -156,6 +80,48 @@ def filter_trading_hours(
     return df[morning | afternoon]
 
 
+def resample_last(
+    df: pd.DataFrame,
+    ts_col: str,
+    freq: str = "100ms",
+) -> pd.DataFrame:
+    """
+    Keep one row per `freq` bucket: the last observation in each bucket. Empty
+    buckets are omitted.
+
+    `ts_col` must be integer nanoseconds since the epoch. Timestamps are NOT
+    floored to the grid; each retained row keeps the actual timestamp of its
+    last snapshot. This makes the column an exact, sorted, leak-free time axis
+    for both `compute_feature_target_matrix` (which locates horizons via
+    `searchsorted` and needs no regular grid) and a backward `merge_asof`
+    (flooring would stamp a snapshot earlier than observed and leak future
+    information into the as-of join).
+
+    Parameters
+    ----------
+    df     : pd.DataFrame
+    ts_col : Integer-nanosecond timestamp column to bucket on.
+    freq   : Bucket width as a pandas offset string, e.g. "100ms", "1s".
+    """
+    if len(df) == 0:
+        return df.reset_index(drop=True)
+
+    freq_ns = pd.Timedelta(freq).value
+    ts = df[ts_col].to_numpy()
+
+    # Stable sort so "last per bucket" is well defined even for ties 
+    order = np.argsort(ts, kind="stable")
+    bucket = ts[order] // freq_ns
+
+    # Rows are contiguous per bucket after sorting; keep each bucket's last row,
+    # i.e. the position where the next row falls into a different bucket.
+    keep = np.empty(len(bucket), dtype=bool)
+    keep[-1] = True
+    keep[:-1] = bucket[1:] != bucket[:-1]
+
+    return df.iloc[order[keep]].reset_index(drop=True)
+
+
 def compute_transaction_price(
     df: pd.DataFrame
 ) -> pd.Series:
@@ -184,7 +150,6 @@ def compute_feature_target_matrix(
     dtype: np.dtype = np.float64, # For testing, this needs to be float64 at 1e-6
 ) -> pd.DataFrame:
     """
-    Resamples data to 100ms (empty buckets are omitted) and computes:
     1) Forward returns for all price measures
     2) Non-overlapping backward returns for microprice
     3) Non-overlapping change in order book imbalance at first level
@@ -204,7 +169,7 @@ def compute_feature_target_matrix(
     # Horizon classification
     deltas = np.array([pd.Timedelta(h).value for h in horizons], dtype=np.int64)
 
-    ts = df[ts_col].to_numpy(dtype=np.float64)
+    ts = df[ts_col].to_numpy(dtype=np.int64)
 
     forward_idx = np.flatnonzero(deltas >= 0)
     backward_idx = np.flatnonzero(deltas < 0)
