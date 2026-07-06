@@ -5,26 +5,26 @@ from datetime import datetime, timedelta
 
 SYMBOLS = [
  'Adidas',
- 'Deutsche_Post',
+ 'Deutsche Post',
  'Henkel',
  'Fresenius',
  'Siemens',
  'Beiersdorf',
  'RWE',
- 'Muenchener_Rueckversicherungs-Gesellschaft',
+ 'Muenchener Rueckversicherungs-Gesellschaft',
  'Continental',
- 'Mercedes_Benz',
+ 'Mercedes Benz',
  'Zalando',
  'Volkswagen',
  'Brenntag',
  'Qiagen',
  'Infineon',
- 'Heidelberg_Cement',
- 'Deutsche_Boerse',
+ 'Heidelberg Cement',
+ 'Deutsche Boerse',
  'Sartorius',
- 'Fresenius_Medical_Care',
+ 'Fresenius Medical Care',
  'Airbus',
- 'FUT_DAX_Futures']
+ 'FUT_DAX Futures']
 
 
 
