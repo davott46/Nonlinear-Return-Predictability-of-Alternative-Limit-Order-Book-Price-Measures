@@ -212,14 +212,15 @@ class TestBackwardFeatures(unittest.TestCase):
         np.testing.assert_allclose(f[1:], [LN2, LN2, LN2, LN2], atol=1e-9)
 
     def test_nonprice_feature_is_plain_diff(self):
-        # L1-QImb is NOT in PRICE_MEASURES -> plain difference, not log
-        df = _regular_df({"L1-QImb": [0.0, 1.0, 3.0, 6.0, 10.0]})
+        # L1-Volume is NOT in PRICE_MEASURES -> plain difference, not log.
+        # Its backward change is the summed L1 bid/ask volume change over the segment.
+        df = _regular_df({"L1-Volume": [0.0, 1.0, 3.0, 6.0, 10.0]})
         out = du.compute_feature_target_matrix(
             df, ts_col="Timestamp",
-            target_cols=[], feature_cols=["L1-QImb"],
+            target_cols=[], feature_cols=["L1-Volume"],
             horizons=["-1s"],
         )
-        f = out["F_L1-QImb_-1s"].to_numpy()
+        f = out["F_L1-Volume_-1s"].to_numpy()
         self.assertTrue(np.isnan(f[0]))
         np.testing.assert_allclose(f[1:], [1.0, 2.0, 3.0, 4.0], atol=1e-9)
 
