@@ -152,14 +152,14 @@ def compute_feature_target_matrix(
     """
     1) Forward returns for all price measures
     2) Non-overlapping backward returns for microprice
-    3) Non-overlapping sum of the volume changes at the first order-book level
+    3) Non-overlapping change in order book imbalance at first level
 
     Parameters
     ----------
     df            : pd.DataFrame
     ts_col        : Timestamp column.
     target_cols   : Price columns used for return computation.
-    feature_cols  : Columns for lagged feature extraction (MicroPrice and L1-Volume).
+    feature_cols  : Columns for lagged feature extraction (MicroPrice and L1-Qimb).
     horizons      : Neg value represent past horizons, i.e. ["1s", "5s", "-1s", "-5s"]
     dtype         : Numerical dtype for output arrays.
     """
