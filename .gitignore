@@ -5,3 +5,4 @@ notes.ipynb
 __pycache__/
 .pytest_cache/
 data/
+pdfs/

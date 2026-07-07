@@ -2,8 +2,6 @@
 Test suite for the data-processing pipeline in utils/data_preprocessing.py.
 
 Covers the behaviour agreed on:
-  * resample_last  -> last-observation-per-bucket, empty buckets omitted,
-                      ACTUAL (non-floored) int-ns timestamps preserved.
   * compute_feature_target_matrix
         - forward log-returns:  log(px[t+h] / px[t]), first ts >= t+h
         - backward features: non-overlapping, additive segments,
@@ -31,73 +29,11 @@ SEC = 1_000_000_000  # one second in nanoseconds
 LN2 = np.log(2.0)
 
 
-def _ns_grid(offsets_ms):
-    """Int-ns timestamps at the given millisecond offsets from a fixed base."""
-    base = pd.Timestamp("2023-01-02 09:20:00").value
-    return base + np.array(offsets_ms, dtype=np.int64) * 1_000_000
-
-
 def _regular_df(px_map, n=5):
     """DataFrame on a 1-second int-ns grid with the given price columns."""
     data = {"Timestamp": np.arange(n, dtype=np.int64) * SEC}
     data.update(px_map)
     return pd.DataFrame(data)
-
-
-# ---------------------------------------------------------------------------
-# resample_last
-# ---------------------------------------------------------------------------
-
-class TestResampleLast(unittest.TestCase):
-
-    def test_keeps_last_per_bucket_and_omits_empty(self):
-        # buckets: .000 -> {0,30,90}, .100 -> {150}, (.200/.300 empty), .400 -> {400,410}
-        df = pd.DataFrame({
-            "Timestamp": _ns_grid([0, 30, 90, 150, 400, 410]),
-            "price": [1, 2, 3, 4, 5, 6],
-        })
-        out = du.resample_last(df, "Timestamp", "100ms")
-
-        # one row per non-empty bucket, last observation kept
-        self.assertEqual(out["price"].tolist(), [3, 4, 6])
-        # empty buckets (.200, .300) are absent -> only 3 rows
-        self.assertEqual(len(out), 3)
-
-    def test_preserves_actual_timestamps_no_floor(self):
-        df = pd.DataFrame({
-            "Timestamp": _ns_grid([0, 30, 90, 150, 400, 410]),
-            "price": [1, 2, 3, 4, 5, 6],
-        })
-        out = du.resample_last(df, "Timestamp", "100ms")
-
-        # kept timestamps are the ACTUAL last-in-bucket times (90, 150, 410 ms),
-        # not floored to the grid edge (0, 100, 400 ms)
-        self.assertEqual(out["Timestamp"].tolist(), _ns_grid([90, 150, 410]).tolist())
-
-    def test_handles_unsorted_input(self):
-        df = pd.DataFrame({
-            "Timestamp": _ns_grid([410, 0, 150, 90, 400, 30]),
-            "price": [6, 1, 4, 3, 5, 2],
-        })
-        out = du.resample_last(df, "Timestamp", "100ms")
-
-        # result is time-sorted and identical to the sorted-input case
-        self.assertEqual(out["Timestamp"].tolist(), _ns_grid([90, 150, 410]).tolist())
-        self.assertEqual(out["price"].tolist(), [3, 4, 6])
-
-    def test_tie_keeps_last_stable(self):
-        # two rows share an identical timestamp; stable sort keeps the later row
-        df = pd.DataFrame({
-            "Timestamp": _ns_grid([50, 50]),
-            "price": [1, 2],
-        })
-        out = du.resample_last(df, "Timestamp", "100ms")
-        self.assertEqual(out["price"].tolist(), [2])
-
-    def test_empty_df(self):
-        df = pd.DataFrame({"Timestamp": np.array([], dtype=np.int64), "price": []})
-        out = du.resample_last(df, "Timestamp", "100ms")
-        self.assertEqual(len(out), 0)
 
 
 # ---------------------------------------------------------------------------

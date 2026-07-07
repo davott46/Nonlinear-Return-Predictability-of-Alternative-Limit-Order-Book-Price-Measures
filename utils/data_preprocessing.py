@@ -80,22 +80,37 @@ def filter_trading_hours(
     return df[morning | afternoon]
 
 
-def resample_last(
+def resample_to_regular_grid(
     df: pd.DataFrame,
     ts_col: str,
     freq: str = "100ms",
 ) -> pd.DataFrame:
     """
-    Keep one row per `freq` bucket: the last observation in each bucket. Empty
-    buckets are omitted.
+    Sample onto a *regular* grid at `freq`, forward-filling the state into
+    inactive buckets. This is the sampling scheme used by Cestonaro & Trimpe
+    (2025): the variables are sampled at a fixed 100 ms frequency, so quiet
+    periods produce zero returns ("zero-inflated returns").
 
-    `ts_col` must be integer nanoseconds since the epoch. Timestamps are NOT
-    floored to the grid; each retained row keeps the actual timestamp of its
-    last snapshot. This makes the column an exact, sorted, leak-free time axis
-    for both `compute_feature_target_matrix` (which locates horizons via
-    `searchsorted` and needs no regular grid) and a backward `merge_asof`
-    (flooring would stamp a snapshot earlier than observed and leak future
-    information into the as-of join).
+    Contrast with dropping empty buckets, which yields an irregular, event-like
+    axis. On that axis short-horizon predictability is inflated (the flat,
+    zero-return periods are removed) and each labelled horizon (100ms, 1s, ...)
+    spans a variable amount of real time because `searchsorted` snaps forward to
+    the next populated row rather than landing on `t+h`. On the regular grid
+    here, `t+h` is exactly `h/freq` buckets ahead, so the horizons mean what
+    they say.
+
+    Procedure
+    ---------
+    1. Floor each timestamp to its `freq` bucket and keep the last observation
+       per populated bucket (the state as of the end of that bucket).
+    2. Reindex onto the full regular grid from the first to the last populated
+       bucket and forward-fill every column.
+
+    Timestamps are floored to the bucket start. In the fully bucketed regime
+    every downstream variable lives on this same grid, so there is no sub-bucket
+    row a floored snapshot could leak into; a backward `merge_asof` against
+    another grid resampled the same way becomes an exact, leak-free per-bucket
+    join.
 
     Parameters
     ----------
@@ -107,19 +122,31 @@ def resample_last(
         return df.reset_index(drop=True)
 
     freq_ns = pd.Timedelta(freq).value
+
     ts = df[ts_col].to_numpy()
-
-    # Stable sort so "last per bucket" is well defined even for ties 
     order = np.argsort(ts, kind="stable")
-    bucket = ts[order] // freq_ns
+    df = df.iloc[order].reset_index(drop=True)
+    floored = (ts[order] // freq_ns) * freq_ns
 
-    # Rows are contiguous per bucket after sorting; keep each bucket's last row,
-    # i.e. the position where the next row falls into a different bucket.
-    keep = np.empty(len(bucket), dtype=bool)
+    # Keep the last row per populated bucket (contiguous after sorting).
+    keep = np.empty(len(floored), dtype=bool)
     keep[-1] = True
-    keep[:-1] = bucket[1:] != bucket[:-1]
+    keep[:-1] = floored[1:] != floored[:-1]
 
-    return df.iloc[order[keep]].reset_index(drop=True)
+    df = df.iloc[keep].reset_index(drop=True)
+    floored = floored[keep]
+    df[ts_col] = floored
+
+    # Reindex onto the full regular grid and forward-fill the state.
+    full = np.arange(floored[0], floored[-1] + freq_ns, freq_ns, dtype=np.int64)
+
+    return (
+        df.set_index(ts_col)
+        .reindex(full)
+        .ffill()
+        .rename_axis(ts_col)
+        .reset_index()
+    )
 
 
 def compute_transaction_price(
