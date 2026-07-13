@@ -9,7 +9,10 @@ Covers the behaviour agreed on:
         - price measures use log-differences, other features plain differences
         - out-of-range horizons produce NaN
   * compute_transaction_price -> buy=ask, sell=bid, forward-filled
-  * filter_trading_hours      -> Xetra Berlin windows, boundaries
+  * filter_trading_hours      -> Xetra Berlin windows, boundaries,
+                                 int-ns UTC input converted to Berlin
+  * resample_to_regular_grid  -> last obs per bucket, ffill into empty
+                                 buckets, unsorted input, empty input
   * merge_asof integration    -> backward as-of join is leak-free
 
 Run with:  python -m unittest tests.test_data_preprocessing
@@ -57,6 +60,17 @@ class TestComputeTransactionPrice(unittest.TestCase):
 # filter_trading_hours
 # ---------------------------------------------------------------------------
 
+def _berlin_ns(times):
+    """Berlin wall-clock strings -> int epoch-nanoseconds (UTC)."""
+    return (
+        pd.to_datetime(times)
+        .tz_localize("Europe/Berlin")
+        .tz_convert("UTC")
+        .as_unit("ns")
+        .asi8
+    )
+
+
 class TestFilterTradingHours(unittest.TestCase):
 
     def test_boundaries(self):
@@ -71,23 +85,82 @@ class TestFilterTradingHours(unittest.TestCase):
             "2023-01-02 17:15",  # afternoon close (excl)-> drop
         ]
         df = pd.DataFrame({
-            "Timestamp_Europe/Berlin": pd.to_datetime(times).tz_localize("Europe/Berlin"),
+            "Timestamp": _berlin_ns(times),
             "row": range(len(times)),
         })
         kept = du.filter_trading_hours(df)["row"].tolist()
         self.assertEqual(kept, [1, 2, 5, 6])
 
-    def test_converts_from_other_tz(self):
-        # same instants, but stored in a different tz (as the raw data actually is);
-        # the filter must convert to Berlin before applying the window
-        berlin = pd.to_datetime(
-            ["2023-01-02 09:17", "2023-01-02 09:16"]
-        ).tz_localize("Europe/Berlin")
+    def test_converts_utc_to_berlin(self):
+        # timestamps are epoch-ns UTC; the filter must convert to Berlin
+        # before applying the window. In summer (CEST, UTC+2) 09:17 Berlin
+        # is 07:17 UTC — naive UTC filtering would drop it.
         df = pd.DataFrame({
-            "Timestamp_Europe/Berlin": berlin.tz_convert("Asia/Tokyo"),
+            "Timestamp": _berlin_ns(["2023-06-01 09:17", "2023-06-01 09:16"]),
             "row": [0, 1],
         })
         self.assertEqual(du.filter_trading_hours(df)["row"].tolist(), [0])
+
+    def test_custom_ts_col(self):
+        df = pd.DataFrame({
+            "ts": _berlin_ns(["2023-01-02 10:00", "2023-01-02 08:00"]),
+            "row": [0, 1],
+        })
+        self.assertEqual(du.filter_trading_hours(df, ts_col="ts")["row"].tolist(), [0])
+
+
+# ---------------------------------------------------------------------------
+# resample_to_regular_grid
+# ---------------------------------------------------------------------------
+
+class TestResampleToRegularGrid(unittest.TestCase):
+
+    def test_last_obs_per_bucket_and_ffill(self):
+        # 1s buckets: bucket0 has two ticks (keep the last, px=2),
+        # bucket1 is empty (ffill), bucket2 has one tick.
+        df = pd.DataFrame({
+            "Timestamp": np.array([0, int(0.4e9), int(2.3e9)], dtype=np.int64),
+            "px": [1.0, 2.0, 5.0],
+        })
+        out = du.resample_to_regular_grid(df, ts_col="Timestamp", freq="1s")
+        self.assertEqual(out["Timestamp"].tolist(), [0, SEC, 2 * SEC])
+        self.assertEqual(out["px"].tolist(), [2.0, 2.0, 5.0])
+
+    def test_unsorted_input_is_sorted_first(self):
+        df = pd.DataFrame({
+            "Timestamp": np.array([2, 0, 1], dtype=np.int64) * SEC,
+            "px": [3.0, 1.0, 2.0],
+        })
+        out = du.resample_to_regular_grid(df, ts_col="Timestamp", freq="1s")
+        self.assertEqual(out["Timestamp"].tolist(), [0, SEC, 2 * SEC])
+        self.assertEqual(out["px"].tolist(), [1.0, 2.0, 3.0])
+
+    def test_grid_starts_at_floored_first_bucket(self):
+        # first tick mid-bucket: grid starts at the bucket floor, not the tick
+        df = pd.DataFrame({
+            "Timestamp": np.array([int(1.5e9), int(2.5e9)], dtype=np.int64),
+            "px": [1.0, 2.0],
+        })
+        out = du.resample_to_regular_grid(df, ts_col="Timestamp", freq="1s")
+        self.assertEqual(out["Timestamp"].tolist(), [SEC, 2 * SEC])
+        self.assertEqual(out["px"].tolist(), [1.0, 2.0])
+
+    def test_empty_input(self):
+        df = pd.DataFrame({"Timestamp": np.array([], dtype=np.int64),
+                           "px": np.array([], dtype=np.float64)})
+        out = du.resample_to_regular_grid(df, ts_col="Timestamp", freq="1s")
+        self.assertEqual(len(out), 0)
+        self.assertListEqual(sorted(out.columns), ["Timestamp", "px"])
+
+    def test_100ms_default_freq(self):
+        # default freq is 100ms; ticks 30ms and 250ms apart land in buckets 0 and 2
+        df = pd.DataFrame({
+            "Timestamp": np.array([30_000_000, 250_000_000], dtype=np.int64),
+            "px": [1.0, 2.0],
+        })
+        out = du.resample_to_regular_grid(df, ts_col="Timestamp")
+        self.assertEqual(out["Timestamp"].tolist(), [0, 100_000_000, 200_000_000])
+        self.assertEqual(out["px"].tolist(), [1.0, 1.0, 2.0])
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 
 
 SYMBOLS = [
@@ -27,8 +26,6 @@ SYMBOLS = [
  'FUT_DAX Futures']
 
 
-
-
 SAMPLE_DATES = [
  '2023-01-02', '2023-01-03', '2023-01-04', '2023-01-05', '2023-01-06', '2023-01-09', '2023-01-10', '2023-01-11',
  '2023-01-12', '2023-01-13', '2023-01-16', '2023-01-17', '2023-01-18', '2023-01-19', '2023-01-20', '2023-01-23',
@@ -51,10 +48,9 @@ SAMPLE_DATES = [
 PRICE_MEASURES = ['TransactionPrice','MidPrice', 'MidPriceQW', 'MidPriceCQW', 'MicroPrice']
 
 
-# Make this faster using int timestamp instead of datetime ts later.
 def filter_trading_hours(
     df: pd.DataFrame,
-    ts_col: str = 'Timestamp_Europe/Berlin'
+    ts_col: str = 'Timestamp'
 ) -> pd.DataFrame:
     """
     Filters a DataFrame to only keep rows whose datetime falls within
@@ -62,14 +58,11 @@ def filter_trading_hours(
 
     - 09:17 to 12:45
     - 13:17 to 17:15
-    """
-    dt = pd.to_datetime(df[ts_col])
 
-    # Ensure Europe/Berlin timezone
-    if dt.dt.tz is None:
-        dt = dt.dt.tz_localize("Europe/Berlin")
-    else:
-        dt = dt.dt.tz_convert("Europe/Berlin")
+    `ts_col` must be an integer epoch-nanosecond column (UTC).
+    """
+    dt = pd.to_datetime(df[ts_col].to_numpy(dtype=np.int64), unit="ns", utc=True)
+    dt = pd.Series(dt.tz_convert("Europe/Berlin"), index=df.index)
 
     # Minutes since midnight
     minutes = dt.dt.hour * 60 + dt.dt.minute
@@ -86,32 +79,15 @@ def resample_to_regular_grid(
     freq: str = "100ms",
 ) -> pd.DataFrame:
     """
-    Sample onto a *regular* grid at `freq`, forward-filling the state into
-    inactive buckets. This is the sampling scheme used by Cestonaro & Trimpe
-    (2025): the variables are sampled at a fixed 100 ms frequency, so quiet
-    periods produce zero returns ("zero-inflated returns").
-
-    Contrast with dropping empty buckets, which yields an irregular, event-like
-    axis. On that axis short-horizon predictability is inflated (the flat,
-    zero-return periods are removed) and each labelled horizon (100ms, 1s, ...)
-    spans a variable amount of real time because `searchsorted` snaps forward to
-    the next populated row rather than landing on `t+h`. On the regular grid
-    here, `t+h` is exactly `h/freq` buckets ahead, so the horizons mean what
-    they say.
+    Sample onto a *regular* grid at `freq`, forward-filling the state into inactive buckets.
+    Variables are sampled at a fixed 100 ms frequency, so quiet periods produce zero returns.
 
     Procedure
     ---------
-    1. Floor each timestamp to its `freq` bucket and keep the last observation
+    1. Floor each timestamp to its `freq` bucket start and keep the last observation
        per populated bucket (the state as of the end of that bucket).
     2. Reindex onto the full regular grid from the first to the last populated
        bucket and forward-fill every column.
-
-    Timestamps are floored to the bucket start. In the fully bucketed regime
-    every downstream variable lives on this same grid, so there is no sub-bucket
-    row a floored snapshot could leak into; a backward `merge_asof` against
-    another grid resampled the same way becomes an exact, leak-free per-bucket
-    join.
-
     Parameters
     ----------
     df     : pd.DataFrame

@@ -1,8 +1,9 @@
 ad_hoc/
-Regression_Output/
+model_outputs/
 notes.ipynb
 .ipynb_checkpoints/
 __pycache__/
 .pytest_cache/
 data/
 pdfs/
+tests/
