@@ -125,25 +125,6 @@ def resample_to_regular_grid(
     )
 
 
-def compute_transaction_price(
-    df: pd.DataFrame
-) -> pd.Series:
-    side_arr = df['Side'].to_numpy()
-    ask_arr  = df['L1-AskPrice'].to_numpy()
-    bid_arr  = df['L1-BidPrice'].to_numpy()
-
-    out = np.empty(len(side_arr), dtype=np.float64)
-    out[:] = np.nan
-
-    buy_mask  = side_arr == 1
-    sell_mask = side_arr == -1
-
-    out[buy_mask]  = ask_arr[buy_mask]
-    out[sell_mask] = bid_arr[sell_mask]
-
-    return pd.Series(out, index=df.index).ffill()    
-
-
 def compute_feature_target_matrix(
     df: pd.DataFrame,
     ts_col: str,
