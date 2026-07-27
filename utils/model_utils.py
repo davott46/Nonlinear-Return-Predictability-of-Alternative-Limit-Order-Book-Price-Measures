@@ -8,10 +8,11 @@ def initialize_run(
     output_root: str,
     model_version: str,
     feature_set_id: str,
-    normalization_id: str
-) -> int:
+    normalization_id: str,
+    pad: int = 2
+) -> str:
     """
-    Creates sequential run_id and appends metadata to registry.
+    Creates sequential zero-padded run_id (e.g. "03") and appends metadata to registry.
     """
 
     output_root = Path(output_root)
@@ -21,9 +22,11 @@ def initialize_run(
 
     if registry_path.exists():
         existing_runs = pd.read_csv(registry_path)
-        run_id = 0 if existing_runs.empty else int(existing_runs["run_id"].max()) + 1
+        next_id = 0 if existing_runs.empty else int(existing_runs["run_id"].max()) + 1
     else:
-        run_id = 0
+        next_id = 0
+
+    run_id = f"{next_id:0{pad}d}"
 
     pd.DataFrame([{
         "run_id": run_id,

@@ -7,3 +7,5 @@ __pycache__/
 data/
 pdfs/
 tests/
+scripts/evaluation_utils.ipynb
+utils/evaluation_utils.py
