@@ -2,6 +2,38 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import os
+import subprocess
+
+
+def select_device(min_free_mib: int = 8192) -> str:
+    """
+    Pick the CUDA device with the most free memory, e.g. "cuda:1".
+
+    Falls back to "cpu" when nvidia-smi is unavailable or no GPU has at
+    least `min_free_mib` MiB free (the GPUs are shared with other users).
+    """
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.free",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout
+    except (FileNotFoundError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired):
+        return "cpu"
+
+    best_idx, best_free = None, -1
+    for line in out.strip().splitlines():
+        try:
+            idx, free = (int(v) for v in line.split(","))
+        except ValueError:
+            continue
+        if free > best_free:
+            best_idx, best_free = idx, free
+
+    if best_idx is None or best_free < min_free_mib:
+        return "cpu"
+    return f"cuda:{best_idx}"
 
 
 def initialize_run(

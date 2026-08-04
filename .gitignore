@@ -1,11 +1,10 @@
 ad_hoc/
 model_outputs/
-notes.ipynb
 .ipynb_checkpoints/
 __pycache__/
 .pytest_cache/
 data/
-pdfs/
+docs/
 tests/
-scripts/evaluation_utils.ipynb
+scripts/model_evaluation.ipynb
 utils/evaluation_utils.py
