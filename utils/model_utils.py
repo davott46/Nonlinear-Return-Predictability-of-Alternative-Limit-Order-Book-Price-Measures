@@ -1,4 +1,6 @@
+from datetime import datetime, timezone
 from pathlib import Path
+import json
 import numpy as np
 import pandas as pd
 import os
@@ -36,63 +38,97 @@ def select_device(min_free_mib: int = 8192) -> str:
     return f"cuda:{best_idx}"
 
 
-def initialize_run(
-    output_root: str,
-    model_version: str,
-    feature_set_id: str,
-    normalization_id: str,
-    pad: int = 2
-) -> str:
-    """
-    Creates sequential zero-padded run_id (e.g. "03") and appends metadata to registry.
-    """
-
-    output_root = Path(output_root)
-    output_root.mkdir(parents=True, exist_ok=True)
-
-    registry_path = output_root / "run_registry.csv"
-
-    if registry_path.exists():
-        existing_runs = pd.read_csv(registry_path)
-        next_id = 0 if existing_runs.empty else int(existing_runs["run_id"].max()) + 1
+def _next_run_id(runs_dir: Path, pad: int = 2) -> str:
+    """Next sequential zero-padded run id from the numeric dir names in runs_dir."""
+    if runs_dir.exists():
+        ids = [int(d.name) for d in runs_dir.iterdir() if d.is_dir() and d.name.isdigit()]
     else:
-        next_id = 0
-
-    run_id = f"{next_id:0{pad}d}"
-
-    pd.DataFrame([{
-        "run_id": run_id,
-        "model_version": model_version,
-        "feature_set_id": feature_set_id,
-        "normalization_id": normalization_id
-    }]).to_csv(
-        registry_path,
-        mode="a",
-        header=not registry_path.exists(),
-        index=False
-    )
-
-    return run_id
+        ids = []
+    next_id = max(ids) + 1 if ids else 0
+    return f"{next_id:0{pad}d}"
 
 
-def create_output_dirs(
+def _write_manifest(run_dir: Path, manifest: dict) -> None:
+    """Atomic write: a crash mid-dump never leaves a corrupt manifest.json."""
+    tmp = run_dir / "manifest.json.tmp"
+    with open(tmp, "w") as f:
+        json.dump(manifest, f, indent=2, default=str)
+    os.replace(tmp, run_dir / "manifest.json")
+
+
+def load_manifest(run_dir) -> dict:
+    with open(Path(run_dir) / "manifest.json") as f:
+        return json.load(f)
+
+
+def start_run(
     output_root: str,
-    run_id: str,
-) -> dict:
+    model_family: str,
+    feature_set_id: str,
+    symbols: list,
+    train_start: str,
+    test_end: str,
+    horizons: list,
+    feature_cols: list,
+    target_cols: list,
+    training_scheme: str,
+    purpose: str = "",
+    hp_config: dict | None = None,
+    save_tick_level_data: bool = True,
+    pad: int = 2,
+) -> tuple[str, dict]:
+    """Create <output_root>/runs/<run_id>/ and write its manifest.json.
+
+    The manifest is the metadata store per run
+    run_id is allocated by scanning the existing runs/ dir names.
+    Written with status="running"; call finalize_run when the run is done.
+    `hp_config` is an opaque dict for the hyperparameters the run loaded
+    (embed the values, not just a path: source files get regenerated).
+
+    Returns (run_id, dirs) with dirs = {"run": Path, "tick": Path};
+    tick/ is only created when save_tick_level_data is set.
     """
-    Creates output directory structure for a run.
-    """
-    output_root = Path(output_root)
+    runs_dir = Path(output_root) / "runs"
+    run_id = _next_run_id(runs_dir, pad=pad)
+    run_dir = runs_dir / run_id
+    run_dir.mkdir(parents=True)
 
-    dirs = {
-        "tick": output_root / "TickLevel" / str(run_id),
-        "daily": output_root / "DailyDiagnostics" / str(run_id),
-    }
+    dirs = {"run": run_dir, "tick": run_dir / "tick"}
+    if save_tick_level_data:
+        dirs["tick"].mkdir()
 
-    for path in dirs.values():
-        path.mkdir(parents=True, exist_ok=True)
+    _write_manifest(run_dir, {
+        "run_id": run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "runtime_seconds": None,
+        "status": "running",
+        "model_family": model_family,
+        "feature_set_id": feature_set_id,
+        "symbols": list(symbols),
+        "train_start": train_start,
+        "test_end": test_end,
+        "horizons": list(horizons),
+        "feature_cols": list(feature_cols),
+        "target_cols": list(target_cols),
+        "training_scheme": training_scheme,
+        "save_tick_level_data": save_tick_level_data,
+        "purpose": purpose,
+        "hp_config": hp_config,
+    })
+    return run_id, dirs
 
-    return dirs
+
+def finalize_run(run_dir, status: str = "complete", updates: dict | None = None) -> None:
+    """Mark a run finished: set status, compute runtime_seconds from
+    created_at, apply any extra manifest updates, rewrite atomically."""
+    run_dir = Path(run_dir)
+    manifest = load_manifest(run_dir)
+    manifest["status"] = status
+    elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(manifest["created_at"])
+    manifest["runtime_seconds"] = round(elapsed.total_seconds(), 1)
+    if updates:
+        manifest.update(updates)
+    _write_manifest(run_dir, manifest)
 
 
 def save_table(
