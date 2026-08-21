@@ -168,6 +168,26 @@ def save_table(
         raise ValueError(f"Unsupported file format: {file_format}")
 
 
+# XGBoost silently learns nothing on raw log-return targets: split gains scale
+# with the target variance (~1e-9 for 100ms returns) and fall below hardcoded
+# absolute epsilons in the tree builder, so no tree ever splits. Fitting on
+# y * TARGET_SCALE and dividing predictions back is exact for squared-error
+# models (tree structure, OLS and ridge fits are all scale-equivariant). The
+# constant is fixed rather than per-day so target-unit parameters (reg_alpha,
+# gamma) and regularization strength stay comparable across days.
+TARGET_SCALE = 1e4  # log returns -> basis points
+
+
+def scale_target(y):
+    """Scale a target (or residual target) into fitting units."""
+    return y * TARGET_SCALE
+
+
+def unscale_prediction(pred):
+    """Map model predictions back to raw log-return units."""
+    return pred / TARGET_SCALE
+
+
 def load_day_cache(
         data_root,
         symbol,
@@ -175,11 +195,20 @@ def load_day_cache(
         feature_cols,
         target_cols
 ) -> dict[str, dict[str, np.ndarray]]:
-    """Load all of one symbol's days into {day: {"X", "Y", "timestamp"}}."""
+    """Load all of one symbol's days into {day: {"X", "Y", "timestamp"}}.
+
+    Days without a parquet file are skipped with a warning (stocks can have
+    missing trading days), so the returned dict may hold fewer days than
+    requested. Iterate over its keys, not the requested list.
+    """
     day_cache = {}
 
     for day in days:
-        df = pd.read_parquet(f"{data_root}/{symbol}/{day}.parquet").sort_values("Timestamp")
+        path = f"{data_root}/{symbol}/{day}.parquet"
+        if not os.path.exists(path):
+            print(f"WARNING: {symbol} {day}: no processed file, skipping")
+            continue
+        df = pd.read_parquet(path).sort_values("Timestamp")
         df = df.dropna(subset=feature_cols + target_cols)
 
         day_cache[day] = {
@@ -244,21 +273,96 @@ def daily_diagnostic_rows(
     ]
 
 
+def standardize_features(
+        X_train,
+        X_test,
+        clip_sd: float = 5.0
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Z-score both sets by TRAIN-day mean/std, then winsorize at +-clip_sd.
+
+    Winsorizing is essential for downstream polynomial feature expansions:
+    squared terms of test-day observations far outside the train range
+    otherwise explode out of sample. Zero-variance columns map to zeros.
+
+    Returns (Z_train, Z_test, mean, sd).
+    """
+    mean = X_train.mean(axis=0)
+    sd = X_train.std(axis=0)
+    safe_sd = np.where(sd > 0, sd, 1.0)
+
+    Z_train = np.clip((X_train - mean) / safe_sd, -clip_sd, clip_sd)
+    Z_test = np.clip((X_test - mean) / safe_sd, -clip_sd, clip_sd)
+
+    zero_var = sd == 0
+    if zero_var.any():
+        Z_train[:, zero_var] = 0.0
+        Z_test[:, zero_var] = 0.0
+
+    return (Z_train.astype(np.float32), Z_test.astype(np.float32), mean, sd)
+
+
+def ladder_blocks(
+        Z_train,
+        Z_test,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Cumulative design matrices for the 4-rung linearity ladder.
+
+    Inputs must already be standardized + winsorized (see
+    standardize_features). Each rung adds one kind of non-linearity:
+
+        "linear" : Z                              (p columns)
+        "asym"   : + max(Z, 0)                    (2p)     sign asymmetry
+        "curv"   : + Z*|Z| and Z**2               (4p)     marginal curvature
+        "inter"  : + all pairwise products        (4p + C(p, 2))
+
+    Returns {rung: (A_train, A_test)} as float32 column stacks.
+    """
+    from itertools import combinations
+
+    def stack(blocks):
+        return tuple(
+            np.column_stack(mats).astype(np.float32)
+            for mats in zip(*blocks)
+        )
+
+    blocks = [(Z_train, Z_test)]
+    out = {"linear": stack(blocks)}
+
+    blocks.append((np.maximum(Z_train, 0), np.maximum(Z_test, 0)))
+    out["asym"] = stack(blocks)
+
+    blocks.append((Z_train * np.abs(Z_train), Z_test * np.abs(Z_test)))
+    blocks.append((Z_train ** 2, Z_test ** 2))
+    out["curv"] = stack(blocks)
+
+    pairs = list(combinations(range(Z_train.shape[1]), 2))
+    blocks.append((
+        np.column_stack([Z_train[:, a] * Z_train[:, b] for a, b in pairs]),
+        np.column_stack([Z_test[:, a] * Z_test[:, b] for a, b in pairs]),
+    ))
+    out["inter"] = stack(blocks)
+
+    return out
+
+
 def save_tick_residuals(
         resid,
         timestamps,
         target_cols,
         tick_output_dir,
-        test_day, symbol
+        test_day, symbol,
+        dtype=np.float16
 ) -> None:
     """Minimal tick-level store for Diebold-Mariano: Timestamp + one residual
     column per target. y_true is NOT stored.
 
     float16 residuals: ~2x smaller than float32, aggregate MSE error ~1e-6
     (negligible for DM). feather+zstd is the smallest lossless container here
-    (parquet inflates incompressible floats).
+    (parquet inflates incompressible floats). Pass dtype=np.float32 when
+    residuals sit near float16's subnormal floor (~6e-5, e.g. 100ms-horizon
+    returns) and DM differentials between near-tied models matter.
     """
-    tick_df = pd.DataFrame(resid.astype(np.float16), columns=target_cols)
+    tick_df = pd.DataFrame(resid.astype(dtype), columns=target_cols)
     tick_df.insert(0, "Timestamp", timestamps)
 
     save_table(
