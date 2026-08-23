@@ -5,6 +5,79 @@ import numpy as np
 import pandas as pd
 import os
 import subprocess
+import time
+
+
+class Progress:
+    """File-based progress display for server runs: `cat <path>` from a new
+    ssh session shows all active loops. Replaces tqdm where the terminal
+    that started the run may be gone.
+
+    One line per named loop; nested loops just use different names. The
+    header timestamp shows when the file was last touched, so a stalled or
+    dead run is distinguishable from a slow one. ETA is based on progress
+    made *within this process* (the first `current` seen per name is the
+    baseline), so runs resumed from checkpoints don't report absurdly fast
+    ETAs. `done` keeps the bar in the file, marked "done" with its final
+    elapsed time. Writes are atomic (tmp + rename): a concurrent `cat`
+    never sees a half-written file. Not safe for concurrent writers — one
+    instance per run.
+
+    `update` calls within `write_interval` seconds of the last write are
+    counted but not flushed to disk (state changes like a new bar or `done`
+    always flush), so tight loops can call it per iteration without I/O cost.
+    """
+
+    def __init__(self, path, write_interval: float = 60.0):
+        self.path = str(path)
+        self.write_interval = write_interval
+        self._last_write = -float("inf")
+        # name -> [current, total, start_time, baseline_current, done_time]
+        self.bars = {}
+
+    def update(self, name, current, total):
+        if name not in self.bars:
+            self.bars[name] = [current, total, time.time(), current, None]
+            self._write()
+        else:
+            self.bars[name][0] = current
+            self.bars[name][1] = total
+            if time.time() - self._last_write >= self.write_interval:
+                self._write()
+
+    def done(self, name):
+        if name in self.bars:
+            self.bars[name][4] = time.time()
+            self._write()
+
+    @staticmethod
+    def _fmt(seconds):
+        seconds = int(seconds)
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _write(self):
+        now = time.time()
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        lines = [f"last update: {stamp}"]
+        for name, (cur, tot, start, base, done_at) in self.bars.items():
+            pct = 100.0 * cur / tot if tot else 0.0
+            if done_at is not None:
+                lines.append(f"{name:<12} {pct:5.1f}%  ({cur}/{tot})  "
+                             f"elapsed {self._fmt(done_at - start)}  done")
+                continue
+            elapsed = now - start
+            done_here = cur - base
+            eta_str = (self._fmt(elapsed * (tot - cur) / done_here)
+                       if done_here > 0 else "--:--:--")
+            lines.append(f"{name:<12} {pct:5.1f}%  ({cur}/{tot})  "
+                         f"elapsed {self._fmt(elapsed)}  eta {eta_str}")
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, self.path)
+        self._last_write = now
 
 
 def select_device(min_free_mib: int = 8192) -> str:
