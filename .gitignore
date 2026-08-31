@@ -5,6 +5,5 @@ __pycache__/
 .pytest_cache/
 data/
 docs/
+thesis/
 tests/
-scripts/model_evaluation.ipynb
-utils/evaluation_utils.py

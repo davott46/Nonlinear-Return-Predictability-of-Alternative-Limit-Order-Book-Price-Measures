@@ -1,13 +1,16 @@
+import os
+
+import duckdb
 import pandas as pd
 import numpy as np
 
 
-SYMBOLS = ['Siemens',
- 'Mercedes Benz',
+SYMBOLS = ['Adidas',
+ 'Qiagen',
  'Deutsche Post',
  'Volkswagen',
  'SAP',
- 'Adidas',
+ 'Siemens',
  'Airbus',
  'Muenchener Rueckversicherungs-Gesellschaft',
  'RWE',
@@ -15,7 +18,7 @@ SYMBOLS = ['Siemens',
  'Zalando',
  'Sartorius',
  'Continental',
- 'Qiagen',
+ 'Mercedes Benz',
  'Deutsche Boerse',
  'Brenntag',
  'Beiersdorf',
@@ -230,3 +233,71 @@ def compute_feature_target_matrix(
 
     return pd.concat([df, pd.DataFrame(out_cols, index=df.index)], axis=1)
 
+
+
+def load_fut_dict(fut_cache: str) -> dict:
+    """{date: FUT feature frame} from the cached FUT.parquet."""
+    cached = pd.read_parquet(fut_cache)
+    fut_dict = {date: g.drop(columns='Date').reset_index(drop=True) for date, g in cached.groupby('Date', sort=False)}
+    del cached  # the groupby pieces are copies; free the full frame
+    return fut_dict
+
+
+def process_symbol(raw_root: str, out_root: str, symbol: str, dates: list, fut_cache: str,
+                   duckdb_threads: int = 2) -> None:
+    """LOB -> features/targets for one stock: one parquet per day in <out_root>/<symbol>/, skips existing days."""
+    cols = ["Timestamp", "Trade_VWAP",
+            "L1-QImb", "MidPrice", "MidPriceQW", "MidPriceCQW"]
+
+    # set up duckdb connection (one per worker process; few threads, several workers run at once)
+    con = duckdb.connect()
+    con.execute("SET enable_progress_bar = false")
+    con.execute(f"SET threads = {duckdb_threads}")
+
+    # fut-data is used across all days of the symbol
+    fut_dict = load_fut_dict(fut_cache)
+
+    os.makedirs(f'{out_root}/{symbol}', exist_ok=True)
+
+    for date in dates:
+        out_path = f'{out_root}/{symbol}/{date}.parquet'
+        if os.path.exists(out_path):
+            continue
+
+        path = f'{raw_root}/CS_{symbol}/CS_{symbol}_{date}.csv.gz'
+
+        group = con.execute(f"""
+            SELECT {", ".join(f'"{c}"' for c in cols)}, "MicroPrice_tick-based_10_1s" AS MicroPrice
+            FROM read_csv('{path}')
+        """).df()
+
+        # Trade_VWAP is set only on match events: forward-fill the last trade price
+        group['TransactionPrice'] = group['Trade_VWAP'].ffill()
+
+        # The resampler keeps the last state per 100ms bucket and ffills.
+        # Filter on the integer grid Timestamp (trading hours are derived from it directly).
+        filtered = resample_to_regular_grid(group, "Timestamp", "100ms")
+        filtered = filter_trading_hours(filtered, ts_col="Timestamp").copy()
+
+        featured = compute_feature_target_matrix(
+            df=filtered,
+            ts_col='Timestamp',
+            target_cols=PRICE_MEASURES,
+            feature_cols=['L1-QImb', 'MicroPrice'],
+            horizons=['-5m', '-2.5m', '-1m', '-30s', '-15s', '-5s', '-2s', '-1s', '-100ms',
+                      '100ms', '1s', '2s', '5s', '15s', '30s', '1m', '2.5m', '5m'])
+
+        # drop the raw price levels before the merge
+        featured = featured.drop(columns=['Trade_VWAP', 'TransactionPrice', 'MidPrice', 'MidPriceQW', 'MidPriceCQW', 'MicroPrice'])
+
+        # merge_asof needs both sides sorted
+        featured = featured.sort_values("Timestamp").reset_index(drop=True)
+
+        merged = pd.merge_asof(
+            featured,
+            fut_dict[date],
+            on="Timestamp",
+            direction="backward",
+            suffixes=("_LOB", "_FUT"))
+
+        merged.to_parquet(out_path)
