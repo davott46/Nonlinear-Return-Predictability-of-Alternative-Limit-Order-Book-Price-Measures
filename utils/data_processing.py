@@ -145,7 +145,7 @@ def compute_feature_target_matrix(
     df            : pd.DataFrame
     ts_col        : Timestamp column.
     target_cols   : Price columns used for return computation.
-    feature_cols  : Columns for lagged feature extraction (MicroPrice and L1-Qimb).
+    feature_cols  : Columns for lagged feature extraction (MicroPrice and L1-QDiff).
     horizons      : Neg value represent past horizons, i.e. ["1s", "5s", "-1s", "-5s"]
     dtype         : Numerical dtype for output arrays.
     """
@@ -168,24 +168,16 @@ def compute_feature_target_matrix(
     H = len(horizons)  # number of horizons
     idx_matrix = np.empty((N, H), dtype=np.int32)
 
-    # for targets, find first timestamp right after ts + h
-    for j in forward_idx:
+    # Exact-match lookup on the regular grid: an index whose timestamp is not
+    # exactly ts + delta crosses a session gap (or the day edge) -> mark -1.
+    for j in range(H):
         target_ts = ts + deltas[j]
 
-        idx_matrix[:, j] = np.searchsorted(
-            ts,
-            target_ts,
-            side="left")
-
-    # for features, find last timestamp right before ts - h
-    for j in backward_idx:
-        target_ts = ts + deltas[j]
-
-        idx_matrix[:, j] = (
-            np.searchsorted(
-            ts,
-            target_ts,
-            side="right") - 1)
+        idx = np.searchsorted(ts, target_ts, side="left")
+        in_bounds = idx < N
+        exact = np.zeros(N, dtype=bool)
+        exact[in_bounds] = ts[idx[in_bounds]] == target_ts[in_bounds]
+        idx_matrix[:, j] = np.where(exact, idx, -1)
 
     # ------------------------------------------------------------------
     # Compute targets (returns at t+h)
@@ -246,8 +238,8 @@ def load_fut_dict(fut_cache: str) -> dict:
 def process_symbol(raw_root: str, out_root: str, symbol: str, dates: list, fut_cache: str,
                    duckdb_threads: int = 2) -> None:
     """LOB -> features/targets for one stock: one parquet per day in <out_root>/<symbol>/, skips existing days."""
-    cols = ["Timestamp", "Trade_VWAP",
-            "L1-QImb", "MidPrice", "MidPriceQW", "MidPriceCQW"]
+    cols = ["Timestamp", "Trade_VWAP", "L1-BidSize", "L1-AskSize",
+            "MidPrice", "MidPriceQW", "MidPriceCQW"]
 
     # set up duckdb connection (one per worker process; few threads, several workers run at once)
     con = duckdb.connect()
@@ -274,6 +266,10 @@ def process_symbol(raw_root: str, out_root: str, symbol: str, dates: list, fut_c
         # Trade_VWAP is set only on match events: forward-fill the last trade price
         group['TransactionPrice'] = group['Trade_VWAP'].ffill()
 
+        # Raw order-book imbalance in shares; its interval difference equals the
+        # paper's summed volume changes at best bid minus best ask.
+        group['L1-QDiff'] = group['L1-BidSize'] - group['L1-AskSize']
+
         # The resampler keeps the last state per 100ms bucket and ffills.
         # Filter on the integer grid Timestamp (trading hours are derived from it directly).
         filtered = resample_to_regular_grid(group, "Timestamp", "100ms")
@@ -283,12 +279,13 @@ def process_symbol(raw_root: str, out_root: str, symbol: str, dates: list, fut_c
             df=filtered,
             ts_col='Timestamp',
             target_cols=PRICE_MEASURES,
-            feature_cols=['L1-QImb', 'MicroPrice'],
+            feature_cols=['L1-QDiff', 'MicroPrice'],
             horizons=['-5m', '-2.5m', '-1m', '-30s', '-15s', '-5s', '-2s', '-1s', '-100ms',
                       '100ms', '1s', '2s', '5s', '15s', '30s', '1m', '2.5m', '5m'])
 
         # drop the raw price levels before the merge
-        featured = featured.drop(columns=['Trade_VWAP', 'TransactionPrice', 'MidPrice', 'MidPriceQW', 'MidPriceCQW', 'MicroPrice'])
+        featured = featured.drop(columns=['Trade_VWAP', 'TransactionPrice', 'L1-BidSize', 'L1-AskSize', 'L1-QDiff',
+                                          'MidPrice', 'MidPriceQW', 'MidPriceCQW', 'MicroPrice'])
 
         # merge_asof needs both sides sorted
         featured = featured.sort_values("Timestamp").reset_index(drop=True)
