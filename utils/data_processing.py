@@ -5,26 +5,27 @@ import pandas as pd
 import numpy as np
 
 
-SYMBOLS = ['Adidas',
- 'Qiagen',
- 'Deutsche Post',
- 'Volkswagen',
- 'SAP',
- 'Siemens',
- 'Airbus',
- 'Muenchener Rueckversicherungs-Gesellschaft',
- 'RWE',
- 'Daimler Truck',
- 'Zalando',
- 'Sartorius',
- 'Continental',
- 'Mercedes Benz',
- 'Deutsche Boerse',
- 'Brenntag',
- 'Beiersdorf',
- 'Heidelberg Cement',
- 'Fresenius Medical Care',
- 'Fresenius']
+# All stocks in the sample (raw files CS_<symbol>_<date>.csv.gz).
+SYMBOLS = ['Adidas', 'Airbus', 'Allianz', 'BASF', 'Bayer', 'Beiersdorf', 'BMW', 'Brenntag',
+           'Commerzbank', 'Continental', 'Covestro', 'Daimler Truck', 'Deutsche Bank',
+           'Deutsche Boerse', 'Deutsche Post', 'Deutsche Telekom', 'E.ON', 'Fresenius',
+           'Fresenius Medical Care', 'Hannover Rueck', 'Heidelberg Cement', 'Henkel', 'Infineon',
+           'Linde', 'Mercedes Benz', 'Merck', 'MTUAeroEngines',
+           'Muenchener Rueckversicherungs-Gesellschaft', 'Porsche', 'Porsche Automobil', 'Qiagen',
+           'Rheinmetall', 'RWE', 'SAP', 'Sartorius', 'Siemens', 'Siemens Healthineers',
+           'SiemensEnergy', 'Symrise', 'Volkswagen', 'Vonovia', 'Zalando']
+
+# Stratified 20-stock sample for the headline walk-forward runs.
+HEADLINE_SYMBOLS = ['Adidas', 'Qiagen', 'Deutsche Post', 'Volkswagen', 'SAP', 'Siemens', 'Airbus',
+                    'Muenchener Rueckversicherungs-Gesellschaft', 'RWE', 'Daimler Truck', 'Zalando',
+                    'Sartorius', 'Continental', 'Mercedes Benz', 'Deutsche Boerse', 'Brenntag',
+                    'Beiersdorf', 'Heidelberg Cement', 'Fresenius Medical Care', 'Fresenius']
+
+# Stratified subset for hyperparameter tuning (D026); winners apply to the run stocks.
+TUNE_SYMBOLS = ['Siemens', 'Adidas', 'RWE', 'Continental', 'Beiersdorf']
+
+# Paper's regressors: lagged L1 imbalance change and MicroPrice returns (own LOB + futures).
+STANDARD_FEATURES = ['L1-QDiff', 'MicroPrice']
 
 
 SAMPLE_DATES = [
