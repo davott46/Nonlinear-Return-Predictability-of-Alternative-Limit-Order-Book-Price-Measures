@@ -24,8 +24,7 @@ SYMBOLS = ['Adidas',
  'Beiersdorf',
  'Heidelberg Cement',
  'Fresenius Medical Care',
- 'Fresenius',
- 'FUT_DAX Futures']
+ 'Fresenius']
 
 
 SAMPLE_DATES = [
@@ -266,8 +265,7 @@ def process_symbol(raw_root: str, out_root: str, symbol: str, dates: list, fut_c
         # Trade_VWAP is set only on match events: forward-fill the last trade price
         group['TransactionPrice'] = group['Trade_VWAP'].ffill()
 
-        # Raw order-book imbalance in shares; its interval difference equals the
-        # paper's summed volume changes at best bid minus best ask.
+        # Imbalance in raw shares
         group['L1-QDiff'] = group['L1-BidSize'] - group['L1-AskSize']
 
         # The resampler keeps the last state per 100ms bucket and ffills.
@@ -283,8 +281,16 @@ def process_symbol(raw_root: str, out_root: str, symbol: str, dates: list, fut_c
             horizons=['-5m', '-2.5m', '-1m', '-30s', '-15s', '-5s', '-2s', '-1s', '-100ms',
                       '100ms', '1s', '2s', '5s', '15s', '30s', '1m', '2.5m', '5m'])
 
+        # standardized per day, so cross-day OLS coefficients are scale-free.
+        for c in featured.columns:
+            if c.startswith('F_L1-QDiff_'):
+                std = featured[c].std()
+                if std > 0:
+                    featured[c] = featured[c] / std
+
         # drop the raw price levels before the merge
-        featured = featured.drop(columns=['Trade_VWAP', 'TransactionPrice', 'L1-BidSize', 'L1-AskSize', 'L1-QDiff',
+        featured = featured.drop(columns=['Trade_VWAP', 'TransactionPrice',
+                                          'L1-BidSize', 'L1-AskSize', 'L1-QDiff',
                                           'MidPrice', 'MidPriceQW', 'MidPriceCQW', 'MicroPrice'])
 
         # merge_asof needs both sides sorted
